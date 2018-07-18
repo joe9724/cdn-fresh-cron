@@ -27,25 +27,35 @@ func main() {
 	}
 	defer db.Close()
 
+	gocron.Every(10).Seconds().Do(getdata,db)
+
+
+}
+
+func getdata(db *gorm.DB){
+	//先清空队列
+	gocron.Clear()
 	var produces []model.ProduceModel
-	db.Raw("select * from produce where status=3").Find(&produces)  //3:刷新失败
+	db.Raw("select * from produce where status=0 or status=1 or status=3").Find(&produces)  //3:刷新失败
 	//判断上一次执行时间
 	for k:=0; k<len(produces);k++  {
-       //fmt.Println("try_times is:",produces[k].Status,produces[k].TryTimes)
-       //根据try_times第几次,开启timer定时器
-       var delay uint64
-       if produces[k].TryTimes == 1{
-       	delay = 10
-	   }else if produces[k].TryTimes == 2{
-	   	delay = 60
-	   }else if produces[k].TryTimes == 3{
-	   	delay = 120
-	   }
-       gocron.Every(delay).Second().Do(task,db,produces[k].Status,produces[k].TryTimes,produces[k].TaskID)
+		//fmt.Println("try_times is:",produces[k].Status,produces[k].TryTimes)
+		//根据try_times第几次,开启timer定时器
+		//var delay int64
+		if produces[k].TryTimes == 1{
+			//delay = 10
+			gocron.Every(1).Seconds().Do(task,db,produces[k].Status,produces[k].TryTimes,produces[k].TaskID)
+		}else if produces[k].TryTimes == 2{
+			//delay = 60
+			gocron.Every(5).Seconds().Do(task,db,produces[k].Status,produces[k].TryTimes,produces[k].TaskID)
+		}else if produces[k].TryTimes == 3{
+			//delay = 120
+			gocron.Every(10).Seconds().Do(task,db,produces[k].Status,produces[k].TryTimes,produces[k].TaskID)
+		}
+		//fmt.Println("delay is",delay)
 
 	}
 	<-gocron.Start()
-
 }
 
 func task(db *gorm.DB,status int64,trytimes int64,task_id string){
@@ -55,17 +65,9 @@ func task(db *gorm.DB,status int64,trytimes int64,task_id string){
 }
 
 func QueryYoupai(db *gorm.DB, status int64,trytimes int64,task_id string) {
-	json_content := make(map[string]interface{})
-	json_content["task_ids"] = task_id
-
-	bytesData, err := json.Marshal(json_content)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	reader := bytes.NewReader(bytesData)
-	host := "https://api.upyun.com/purge"
-	request, err := http.NewRequest("POST", host, reader)
+	host := "https://api.upyun.com/purge?task_ids="+task_id
+	fmt.Println("get host is:",host)
+	request, err := http.NewRequest("GET", host, nil)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -101,19 +103,28 @@ func QueryYoupai(db *gorm.DB, status int64,trytimes int64,task_id string) {
 		//正常流程
 		var result model.QueryModel
 		json.Unmarshal(respBytes, &result)
-		if result.Result[0].Progress == 100 { //1代表刷新成功
-			fmt.Println("update produce set status=2,last_update=?,progress=100 where task_id=?", time.Now().Unix(), task_id)
-			db.Exec("update produce set status=2,last_update=?,progress=100 where task_id=?", time.Now().Unix(), task_id)
-			//remove 定时任务
-			//gocron.Remove()
-		} else { //刷新中，进度不到100%
-			fmt.Println("update produce set status=?,last_update=?,progress=? where task_id=?", 1, time.Now().Unix(), result.Result[0].Progress,task_id)
-			db.Exec("update produce set status=?,last_update=?,progress=? where task_id=?", 1, time.Now().Unix(), result.Result[0].Progress,task_id)
+		if len(result.Result)>0{
+			if result.Result[0].Progress == 100 { //1代表刷新成功
+				fmt.Println("update produce set status=2,last_update=?,progress=100 where task_id=?", time.Now().Unix(), task_id)
+				db.Exec("update produce set status=2,last_update=?,progress=100 where task_id=?", time.Now().Unix(), task_id)
+				//remove 定时任务
+				//gocron.Remove()
+			} else { //刷新中，进度不到100%
+				fmt.Println("update produce set status=?,last_update=?,progress=? where task_id=?", 1, time.Now().Unix(), result.Result[0].Progress,task_id)
+				db.Exec("update produce set status=?,last_update=?,progress=? where task_id=?", 1, time.Now().Unix(), result.Result[0].Progress,task_id)
+			}
+			//回调刷新结果给泰德
+			var resultmodel model.ResultModel
+			db.Raw("select * from produce where task_id=?",task_id).Find(&resultmodel)
+			CallbackToTD(resultmodel.EventID, resultmodel.Status)
+		}else{
+			//回调刷新结果给泰德
+			db.Exec("update produce set status=2 where task_id=?",task_id)
+			var resultmodel model.ResultModel
+			db.Raw("select * from produce where task_id=?",task_id).Find(&resultmodel)
+			CallbackToTD(resultmodel.EventID, "2")
 		}
-		//回调刷新结果给泰德
-		var resultmodel model.ResultModel
-		db.Raw("select * from produce where task_id=?",task_id).Find(&resultmodel)
-		CallbackToTD(resultmodel.EventID, resultmodel.Status)
+
 
 	}
 
