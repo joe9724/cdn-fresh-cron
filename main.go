@@ -28,13 +28,14 @@ func main() {
 	defer db.Close()
 
 	gocron.Every(10).Seconds().Do(getdata,db)
-
+	<-gocron.Start()
 
 }
 
 func getdata(db *gorm.DB){
+	fmt.Println("getdata")
 	//先清空队列
-	gocron.Clear()
+	//gocron.Clear()
 	var produces []model.ProduceModel
 	db.Raw("select * from produce where status=0 or status=1 or status=3").Find(&produces)  //3:刷新失败
 	//判断上一次执行时间
@@ -55,7 +56,8 @@ func getdata(db *gorm.DB){
 		//fmt.Println("delay is",delay)
 
 	}
-	<-gocron.Start()
+	//gocron.Clear()
+
 }
 
 func task(db *gorm.DB,status int64,trytimes int64,task_id string){
